@@ -23,6 +23,7 @@ import requests
 
 from .utils import chunk, compact_dict, json_loads, json_dumps
 from .exceptions import GCMError, GCMAuthError, gcm_server_errors
+from ._compat import iteritems
 
 
 __all__ = (
@@ -65,9 +66,13 @@ class GCMClient(object):
 
         Args:
             ids (list): GCM device registration IDs.
-            message (str|dict): Message string or dictionary.
+            message (str|dict): Message string or dictionary. If ``message``
+                is a dict and contains the field ``notification``, then it will
+                be used for the ``notification`` payload.
 
         Keyword Args:
+            notificatoin (dict, optional): Notification payload. Can include
+                the fields ``body``, ``title``, and ``icon``.
             collapse_key (str, optional): Identifier for a group of messages
                 that can be collapsed so that only the last message gets sent
                 when delivery can be resumed. Defaults to ``None``.
@@ -82,6 +87,7 @@ class GCMClient(object):
                 receive the message. Defaults to ``None``.
             dry_run (bool, optional): If ``True`` no message will be sent but
                 request will be tested.
+            priority (str, optional): May be ``High`` or ``Normal`` to be sent.
 
         Returns:
             :class:`GCMResponse`: Response from GCM server.
@@ -147,11 +153,13 @@ class GCMMessage(object):
     def __init__(self,
                  registration_ids,
                  message,
+                 notification=None,
                  collapse_key=None,
                  delay_while_idle=None,
                  time_to_live=None,
                  restricted_package_name=None,
-                 dry_run=None):
+                 dry_run=None,
+                 priority=None):
         self.registration_ids = registration_ids
         self.message = message
         self.collapse_key = collapse_key
@@ -159,18 +167,40 @@ class GCMMessage(object):
         self.time_to_live = time_to_live
         self.restricted_package_name = restricted_package_name
         self.dry_run = dry_run
+        self.notification = notification
+        self.data = {}
+        self.priority = priority
+
+        self._parse_message()
+
+    def _parse_message(self):
+        """Parse and filter :attr:`message` to set :attr:`data` and
+        :attr:`notification`.
+        """
+        if not isinstance(self.message, dict):
+            self.data['message'] = self.message
+        else:
+            if 'notification' in self.message:
+                self.notification = self.message['notification']
+
+            self.message = dict((key, value)
+                                for key, value in iteritems(self.message)
+                                if key not in ('notification',))
+
+            self.data.update(self.message)
 
     def to_dict(self):
         """Return message as dictionary."""
         return compact_dict({
             'registration_ids': self.registration_ids,
-            'data': (self.message if isinstance(self.message, dict)
-                     else {'message': self.message}),
+            'notification': self.notification,
+            'data': self.data,
             'collapse_key': self.collapse_key,
             'delay_while_idle': self.delay_while_idle,
             'time_to_live': self.time_to_live,
             'restricted_package_name': self.restricted_package_name,
-            'dry_run': True if self.dry_run else None
+            'dry_run': True if self.dry_run else None,
+            'priority': self.priority
         })
 
     def to_json(self):  # pragma: no cover
@@ -190,13 +220,21 @@ class GCMMessageStream(object):
     def __iter__(self):
         """Iterate through and yield chunked messages."""
         message = self.message.to_dict()
+        del message['registration_ids']
 
         for ids in chunk(self.message.registration_ids, GCM_MAX_RECIPIENTS):
             for id in ids:
                 log.debug(('Preparing notification for GCM id {0}'
                            .format(id)))
 
-            message['registration_ids'] = ids
+            if len(ids) > 1:
+                to_field = 'registration_ids'
+            else:
+                to_field = 'to'
+                ids = ids[0]
+
+            message[to_field] = ids
+
             yield json_dumps(message)
 
 
@@ -246,7 +284,14 @@ class GCMResponse(object):
                 message = None
 
             self.messages.append(message)
-            registration_ids = (message or {}).get('registration_ids', [])
+            message = message or {}
+
+            if 'registration_ids' in message:
+                registration_ids = message['registration_ids']
+            elif 'to' in message:
+                registration_ids = [message['to']]
+            else:
+                registration_ids = []
 
             if not registration_ids:
                 continue
