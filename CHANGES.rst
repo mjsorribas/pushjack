@@ -4,6 +4,13 @@ Changelog
 =========
 
 
+v1.1.0 (2015-10-22)
+-------------------
+
+- Add support for ``notification`` field to GCM messages. [``GCM``]
+- Replace ``registration_ids`` field with ``to`` field when sending to a single recipient since ``registration_ids`` field has been deprecated for single recipients. [``GCM``]
+
+
 v1.0.1 (2015-05-07)
 -------------------
 
